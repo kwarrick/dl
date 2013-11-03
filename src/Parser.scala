@@ -1,7 +1,11 @@
 /** 
- * ManchesterParser parses subset of syntax used by the ALC Description Logic. 
- * http://www.w3.org/2007/OWL/wiki/ManchesterSyntax#The_Grammar
+ * ManchesterParser parses a subset of Manchester Description Logic
+ * syntax used by the ALC Description Logic.
  *
+ * @author Kevin Warrick
+ * @see http://www.w3.org/2007/OWL/wiki/ManchesterSyntax#The_Grammar
+ *
+ * Example: 
  * person ⊓ ∀eats.plant ⊓ (¬person ⊔ ∃eats.(¬plant ⊓ ¬dairy))
  * person AND (eats ONLY plant) AND (NOT person OR eats ONLY (plant AND dairy))
  * 
@@ -10,18 +14,29 @@
 import scala.util.parsing.combinator._
  
 class ManchesterParser extends JavaTokenParsers {
-  def description: Parser[Any] = conjunction ~ rep("OR" ~ conjunction) | 
-                                 conjunction
-  def conjunction: Parser[Any] = ident ~ "THAT" ~ opt("NOT") ~ restriction ~ rep("AND" ~ opt("NOT") ~ restriction) | 
-                                 primary ~ "AND" ~ primary ~ rep("AND" ~ primary) |
-                                 primary
-  def primary: Parser[Any] =  opt("NOT") ~ (restriction | atomic)
-  def restriction: Parser[Any] =  ident ~ "SOME" ~ primary |
-                                  ident ~ "ONLY" ~ primary 
-  def atomic: Parser[Any] = ident | 
-                            "{" ~ repsep(ident, ",") ~ "}" |
-                            "(" ~ description ~ ")" 
+  def description: Parser[Concept] =
+    rep1sep(conjunction, "OR") ^^ (_.reduceLeft(Or))
+    conjunction
 
+  def conjunction: Parser[Concept] = 
+    rep1sep(primary, "AND") ^^ (_.reduceLeft(And))
+    primary
+
+  def primary: Parser[Concept] = 
+    "NOT" ~> restriction ^^ (Not(_)) | 
+    "NOT" ~> atomic ^^ (Not(_)) |
+    restriction | 
+    atomic
+
+  def restriction: Parser[Concept] = 
+    (ident ~ "SOME" ~ primary) ^^ 
+      { case r ~ "SOME" ~ c => Some(Role(r), c) } |
+    (ident ~ "ONLY" ~ primary) ^^
+      { case r ~ "ONLY" ~ c => Only(Role(r), c) } 
+
+  def atomic: Parser[Concept] = 
+    ident ^^ (Atom(_)) | 
+    "(" ~> description <~ ")" 
 }
  
 object ParseExpr extends ManchesterParser {
