@@ -1,6 +1,10 @@
 /** 
- * ManchesterParser parses a subset of Manchester Description Logic
- * syntax used by the ALC Description Logic.
+ * ManchesterParser parses a subset of Manchester Description Logic syntax 
+ * used by the ALC Description Logic.
+ *
+ * Note that this parser parses only concepts, not general concept inclusions,
+ * because the Tableau algorithm reasons w.r.t an empty Tbox; a Tbox can be 
+ * 'internalized' into a single concept.
  *
  * @author Kevin Warrick
  * @see http://www.w3.org/2007/OWL/wiki/ManchesterSyntax#The_Grammar
@@ -13,7 +17,7 @@
 
 import scala.util.parsing.combinator._
  
-class ManchesterParser extends JavaTokenParsers {
+object ManchesterParser extends JavaTokenParsers {
   def description: Parser[Concept] =
     rep1sep(conjunction, "OR") ^^ (_.reduceLeft(Or))
     conjunction
@@ -37,11 +41,17 @@ class ManchesterParser extends JavaTokenParsers {
   def atomic: Parser[Concept] = 
     ident ^^ (Atom(_)) | 
     "(" ~> description <~ ")" 
-}
- 
-object ParseExpr extends ManchesterParser {
+
+  def apply(input: String): Concept = {
+    parseAll(description, input) match {
+      case Success(result, _) => result
+      case failure : NoSuccess => scala.sys.error(failure.msg)
+    }
+  }
+
   def main(args: Array[String]) {
     println("input : "+ args(0))
     println(parseAll(description, args(0)))
   }
 }
+ 
