@@ -10,19 +10,21 @@
 import akka.actor._
 import akka.pattern.{ ask, pipe }
 import akka.util.Timeout
+import akka.event.Logging
 import scala.util.Random
 import scala.concurrent.ExecutionContext
 import scala.concurrent.duration._
 import scala.concurrent.Future
-import scala.collection.mutable.HashMap
 import scala.collection.SortedSet
 
-case class Expand(c: Concept) 
-case class Duplicate(x: SortedSet[Concept], xy: HashMap[Role, List[ActorRef]])
-case class Query(c: Concept) 
-case class Response(r: Role, c: Concept, b: Boolean) 
+case class Expand(c:  Concept) 
+case class ExpandSome(s: Set[Concept])
+case class ExpandOr(e: SortedSet[Concept], u: SortedSet[Concept])
+case class Duplicate(e: SortedSet[Concept], u: SortedSet[Concept])
 
 class Tableau extends Actor {
+  val log = Logging(context.system, this)
+
   /**
    * Convert a concept to Negation Normal Form, which
    * only allows negation on atomic concepts.
@@ -48,7 +50,7 @@ class Tableau extends Actor {
   }
 
   /**
-   * Initialize the completion graph and begin expanding.
+   * Initialize the completion graph and begin expanding concept.
    *
    * Algorithm terminates when no more rules can be applied to
    * the completion graph nodes or no nodes exists to expand.
@@ -63,90 +65,46 @@ class Tableau extends Actor {
 }
 
 class Node extends Actor {
-  import context._
-  implicit val timeout = Timeout(60.seconds)
-
+  val log = Logging(context.system, this)
   var concepts = SortedSet[Concept]()(ConceptOrdering)
-  var roles = HashMap[Role, List[ActorRef]]()
 
   /**
-   * Apply expansion rules to concept according to 'trace' strategy.
-   * (i.e. disjunction, conjunction, existential, universal)
-   */ 
-  def expand(set: SortedSet[Concept]): Unit = {
-    println("Set:")
-    println(set)
-    println
-
-    if (set.isEmpty) return 
-    else set.head match {
-      case Or(p, q) => {
-        println("Or:")
-        println(p)
-        println(q)
-        println
-
-        if ((concepts intersect Set[Concept](p, q)).isEmpty) {
-          parent ! Duplicate(concepts, roles)
-          expand(set.tail + p)
-          concepts += p
-        }
-      }
-      case And(p, q) => {
-        println("And:")
-        println(p)
-        println(q)
-        println
-
-        val diff = Set[Concept](p, q) diff concepts
-        concepts += (p, q)
-        expand(set.tail ++ diff)
-      }
-      case Some(r, c) => {
-        println("Some:")
-        println(r)
-        println(c)
-        println
-
-        if (roles.getOrElse(r, Nil).isEmpty) {
-          val child = actorOf(Props[Node]) 
-          roles(r) = List(child)
-          println(roles)
-          child ! Expand(c)
-        }
-        else {
-          // BROKEN: RACE CONDITION!
-          // val seq = roles(r) map (ask(_, Query(c)).mapTo[Boolean])
-          // val any = Future.find(seq) { res => res }
-          // any.map(res => Response(r, c, res.getOrElse(false))).pipeTo(self)
-        }
-        expand(set.tail)
-      }
-      case Only(r, c) => {
-        println("Only:")
-        println(r)
-        println(c)
-
-        println("roles:")
-        println(roles)
-        println
-
-        roles(r) map (_ ! Expand(c))
-        expand(set.tail)
-      }
-      case c =>  {
-        println(c)
-        println
-        concepts += c
-        expand(set.tail)
-      }
-    }
+   * Determine if a set contains clashing concepts of the form {C, ¬C}.
+   */
+  def clash(s: SortedSet[Concept]): Boolean = {
+    def pairs = for (p <- s; q <- s) yield (p, q)
+    pairs.find(p => p._1 == Not(p._2)).nonEmpty
   }
 
-  def expand(concept: Concept): Unit = {
-    if (!(concepts contains concept)) {
-      concepts += concept
-      expand(SortedSet(concept)(ConceptOrdering))
+  /**
+   * Apply expansion rules to concept set according to 'trace' strategy.
+   * (i.e. disjunction, conjunction, existential, universal)
+   */ 
+  def expand(expanded: SortedSet[Concept], unexpanded: SortedSet[Concept]): 
+    SortedSet[Concept] = {
+
+    if (unexpanded.isEmpty) expanded
+    else if (clash(expanded) || clash(unexpanded)) expanded
+    else unexpanded.head match {
+      case Or(p, q) => {
+        if ((expanded intersect Set(p, q)).isEmpty) {
+          context.parent ! Duplicate(expanded, unexpanded.tail + p)
+          expand(expanded, unexpanded.tail + q)
+        }
+        else expand(expanded, unexpanded.tail)
+      }
+      case And(p, q) => {
+        val diff = Set[Concept](p, q) diff expanded
+        return expand(expanded ++ diff, unexpanded.tail ++ diff)
+      }
+      case Some(r, c) => {
+        val only = unexpanded.collect({case Only(s, q) if s == r => q})
+        context.actorOf(Props[Node]) ! ExpandSome(only.toSet + c)
+        expand(expanded, unexpanded.tail)
+      }
+      case _ => {
+        expanded ++ unexpanded
+      }
     }
   }
 
@@ -160,17 +118,20 @@ class Node extends Actor {
 
   def receive = {
     case Expand(concept) => {
-      println(self.path + " Expand: ")
-      println(concept)
-      expand(concept) 
+      val s = SortedSet(concept)(ConceptOrdering)
+      concepts = expand(s, s)
     }
-    case Query(concept) => {
-      println("Query: " + concept)
-      sender ! (concepts contains concept)
+    case ExpandSome(concepts) => {
+      val s = SortedSet[Concept]()(ConceptOrdering) ++ concepts 
+      this.concepts = expand(s, s)
     }
-    case Duplicate(concepts, roles) => {
-      println("not implemented")
+    case ExpandOr(e: SortedSet[Concept], u: SortedSet[Concept]) => {
+      concepts = expand(e, u)
     }
+    case Duplicate(e: SortedSet[Concept], u: SortedSet[Concept]) => {
+      context.actorOf(Props[Node]) ! ExpandOr(e, u)
+    }
+    case msg => log.info("unknown message: " + msg)
   }
 }
 
@@ -181,8 +142,8 @@ object Main {
     println(concept)
 
     val system = ActorSystem()
-    val root = system.actorOf(Props[Tableau], "tableau")
-    root ! Expand(concept)
+    val reasoner = system.actorOf(Props[Tableau], "tableau")
+    reasoner ! Expand(concept)
   }
 }
 
