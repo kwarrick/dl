@@ -8,19 +8,16 @@
  */
 
 import akka.actor._
-import akka.pattern.{ ask, pipe }
-import akka.util.Timeout
 import akka.event.Logging
-import scala.util.Random
-import scala.concurrent.ExecutionContext
-import scala.concurrent.duration._
-import scala.concurrent.Future
 import scala.collection.SortedSet
+import scala.collection.mutable.HashMap
 
-case class Expand(c:  Concept) 
+case class Expand(c: Concept) 
 case class ExpandSome(s: Set[Concept])
 case class ExpandOr(e: SortedSet[Concept], u: SortedSet[Concept])
 case class Duplicate(e: SortedSet[Concept], u: SortedSet[Concept])
+case class Blocked(s: SortedSet[Concept])
+case class Unblock()
 
 class Tableau extends Actor {
   val log = Logging(context.system, this)
@@ -29,7 +26,7 @@ class Tableau extends Actor {
    * Convert a concept to Negation Normal Form, which
    * only allows negation on atomic concepts.
    *
-   * Examples of rewriting rules:
+   * Rewriting rules:
    *  ¬¬C = C
    *  ¬(C1 ⊓ C2) = (¬C1 ⊔ ¬C2) 
    *  ¬(C1 ⊔ C2) = (¬C1 ⊓ ¬C2) 
@@ -57,19 +54,23 @@ class Tableau extends Actor {
    */
   val root = context.actorOf(Props[Node])
   def receive = {
-    case Expand(concept) => {
+    case Expand(concept) => 
       root ! Expand(nnf(concept))
-    }
-    // ...
+    case "Complete" =>
+      println("Satisfiable")
+    case "Clash" =>
+      println("Unsatisfiable")
   }
 }
 
 class Node extends Actor {
+  var count = 0
   val log = Logging(context.system, this)
   var concepts = SortedSet[Concept]()(ConceptOrdering)
+  var duplicates = HashMap[Set[ActorRef], Int]()
 
   /**
-   * Determine if a set contains clashing concepts of the form {C, ¬C}.
+   * Determine if a set contains clashing concepts (i.e. {C, ¬C}).
    */
   def clash(s: SortedSet[Concept]): Boolean = {
     def pairs = for (p <- s; q <- s) yield (p, q)
@@ -83,8 +84,10 @@ class Node extends Actor {
   def expand(expanded: SortedSet[Concept], unexpanded: SortedSet[Concept]): 
     SortedSet[Concept] = {
 
-    if (unexpanded.isEmpty) expanded
-    else if (clash(expanded) || clash(unexpanded)) expanded
+    if (unexpanded.isEmpty) 
+      expanded
+    else if (clash(expanded) || clash(unexpanded)) 
+      expanded ++ unexpanded
     else unexpanded.head match {
       case Or(p, q) => {
         if ((expanded intersect Set(p, q)).isEmpty) {
@@ -100,6 +103,7 @@ class Node extends Actor {
       case Some(r, c) => {
         val only = unexpanded.collect({case Only(s, q) if s == r => q})
         context.actorOf(Props[Node]) ! ExpandSome(only.toSet + c)
+        count += 1
         expand(expanded, unexpanded.tail)
       }
       case _ => {
@@ -110,26 +114,50 @@ class Node extends Actor {
 
   /**
    * Subset blocking strategy ensures termination by preventing 
-   * cyclic application of expansion rules. Node x is blocked if
-   * there exists an ancestor node y of x in the tree such that
-   * L(x) is a subset of L(y).
+   * cyclic application of expansion rules. 
+   * Node x is blocked if there exists an ancestor node y of x
+   * in the tree such that L(x) is a subset of L(y).
    */
   // TODO: IMPLEMENT SUBSET BLOCKING
+  // def blocked: Receive = {
+  // }
 
   def receive = {
     case Expand(concept) => {
       val s = SortedSet(concept)(ConceptOrdering)
       concepts = expand(s, s)
+      if (clash(concepts)) context.parent ! "Clash"
+      else context.parent ! "Complete"
     }
-    case ExpandSome(concepts) => {
-      val s = SortedSet[Concept]()(ConceptOrdering) ++ concepts 
-      this.concepts = expand(s, s)
+    case ExpandSome(set) => {
+      val sorted = SortedSet[Concept]()(ConceptOrdering) ++ set 
+      concepts = expand(sorted, sorted)
+      if (clash(concepts)) context.parent ! "Clash"
+      else context.parent ! "Complete"
     }
     case ExpandOr(e: SortedSet[Concept], u: SortedSet[Concept]) => {
       concepts = expand(e, u)
+      if (clash(concepts)) context.parent ! "Clash"
+      else context.parent ! "Complete"
     }
     case Duplicate(e: SortedSet[Concept], u: SortedSet[Concept]) => {
-      context.actorOf(Props[Node]) ! ExpandOr(e, u)
+      val child = context.actorOf(Props[Node]) 
+      child ! ExpandOr(e, u)
+      duplicates(Set(child, sender)) = 2
+      count += 1
+    }
+    case "Clash" => {
+      for (k <- duplicates.keys if k contains sender) {
+        duplicates(k) -= 1    
+        if (duplicates(k) == 0) {
+          context.parent ! "Clash" 
+          context.stop(self)
+        }
+      }
+    }
+    case "Complete" => {
+      count -= 1
+      if (count == 0) context.parent ! "Complete"
     }
     case msg => log.info("unknown message: " + msg)
   }
