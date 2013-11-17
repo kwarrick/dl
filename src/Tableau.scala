@@ -11,13 +11,14 @@ import akka.actor._
 import akka.event.Logging
 import scala.collection.SortedSet
 import scala.collection.mutable.HashMap
+import scala.annotation.tailrec
 
 case class Expand(c: Concept) 
+case class ExpandRoot(c: Concept) 
 case class ExpandSome(s: Set[Concept])
 case class ExpandOr(e: SortedSet[Concept], u: SortedSet[Concept])
 case class Duplicate(e: SortedSet[Concept], u: SortedSet[Concept])
 case class Blocked(s: SortedSet[Concept])
-case class Unblock()
 
 class Tableau extends Actor {
   val log = Logging(context.system, this)
@@ -54,19 +55,17 @@ class Tableau extends Actor {
    */
   val root = context.actorOf(Props[Node])
   def receive = {
-    case Expand(concept) => 
-      root ! Expand(nnf(concept))
-    case "Complete" =>
-      println("Satisfiable")
-    case "Clash" =>
-      println("Unsatisfiable")
+    case Expand(concept) => root ! ExpandRoot(nnf(concept))
+    case "Complete"      => println("Satisfiable")
+    case "Clash"         => println("Unsatisfiable")
   }
 }
 
 class Node extends Actor {
   var count = 0
   val log = Logging(context.system, this)
-  var concepts = SortedSet[Concept]()(ConceptOrdering)
+  var expanded = SortedSet[Concept]()(ConceptOrdering)
+  var unexpanded = SortedSet[Concept]()(ConceptOrdering)
   var duplicates = HashMap[Set[ActorRef], Int]()
 
   /**
@@ -81,9 +80,10 @@ class Node extends Actor {
    * Apply expansion rules to concept set according to 'trace' strategy.
    * (i.e. disjunction, conjunction, existential, universal)
    */ 
+  @tailrec
+  private 
   def expand(expanded: SortedSet[Concept], unexpanded: SortedSet[Concept]): 
     SortedSet[Concept] = {
-
     if (unexpanded.isEmpty) 
       expanded
     else if (clash(expanded) || clash(unexpanded)) 
@@ -112,41 +112,44 @@ class Node extends Actor {
     }
   }
 
-  /**
-   * Subset blocking strategy ensures termination by preventing 
-   * cyclic application of expansion rules. 
-   * Node x is blocked if there exists an ancestor node y of x
-   * in the tree such that L(x) is a subset of L(y).
-   */
-  // TODO: IMPLEMENT SUBSET BLOCKING
-  // def blocked: Receive = {
-  // }
+  def satisfy(e: SortedSet[Concept], u: SortedSet[Concept]): Unit = {
+    concepts = expand(e, u)
+    context.parent ! Blocked(concepts)
+    if (clash(concepts)) context.parent ! "Clash"
+    else if (count == 0) context.parent ! "Complete"
+    print(".")
+  }
+
+  def satisfy(concept: Concept): Unit = {
+    val s = SortedSet(concept)(ConceptOrdering)
+    satisfy(s, s)
+  }
+
+  def satisfy(set: Set[Concept]): Unit = {
+    val sorted = SortedSet[Concept]()(ConceptOrdering) ++ set 
+    satisfy(sorted, sorted)
+  }
 
   def receive = {
-    case Expand(concept) => {
-      val s = SortedSet(concept)(ConceptOrdering)
-      concepts = expand(s, s)
-      if (clash(concepts)) context.parent ! "Clash"
-      else context.parent ! "Complete"
+    case Expand(concept) => satisfy(concept)
+    case ExpandSome(set) => satisfy(set)
+    case ExpandOr(e, u)  => satisfy(e, u) 
+    case ExpandRoot(concept) => {
+      count = 1
+      context.actorOf(Props[Node]) ! Expand(concept) 
     }
-    case ExpandSome(set) => {
-      val sorted = SortedSet[Concept]()(ConceptOrdering) ++ set 
-      concepts = expand(sorted, sorted)
-      if (clash(concepts)) context.parent ! "Clash"
-      else context.parent ! "Complete"
-    }
-    case ExpandOr(e: SortedSet[Concept], u: SortedSet[Concept]) => {
-      concepts = expand(e, u)
-      if (clash(concepts)) context.parent ! "Clash"
-      else context.parent ! "Complete"
-    }
-    case Duplicate(e: SortedSet[Concept], u: SortedSet[Concept]) => {
+    case Duplicate(e, u) => {
       val child = context.actorOf(Props[Node]) 
       child ! ExpandOr(e, u)
       duplicates(Set(child, sender)) = 2
       count += 1
     }
+    case Blocked(s) => {
+      if (s subsetOf concepts) sender ! "Blocked"
+      else context.parent forward Blocked(s)
+    }
     case "Clash" => {
+      count -= 1
       for (k <- duplicates.keys if k contains sender) {
         duplicates(k) -= 1    
         if (duplicates(k) == 0) {
@@ -158,6 +161,11 @@ class Node extends Actor {
     case "Complete" => {
       count -= 1
       if (count == 0) context.parent ! "Complete"
+    }
+    case "Blocked" => {
+      println("BLOCKED")
+      context.parent ! "Complete"
+      context.stop(self)
     }
     case msg => log.info("unknown message: " + msg)
   }
