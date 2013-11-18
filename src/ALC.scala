@@ -18,12 +18,12 @@ case class Only(r: Role, c: Concept) extends Concept
 
 object ConceptOrdering extends Ordering[Concept] {
   def order(concept: Concept): Int = concept match {
-    case Or(p, q)   => 0
-    case And(p, q)  => 1
-    case Some(r, c) => 2
-    case Only(r, c) => 3
-    case Atom(s)    => 4
-    case _          => -1
+    case Atom(s)      => 0
+    case Not(Atom(s)) => 1
+    case Or(p, q)     => 2
+    case And(p, q)    => 3
+    case Some(r, c)   => 4
+    case Only(r, c)   => 5
   }
   def compare(p: Concept, q: Concept) = 
     Ordering[(Int,Int)].compare((order(p), p.hashCode), (order(q), q.hashCode))

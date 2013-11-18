@@ -9,14 +9,11 @@
 
 import akka.actor._
 import akka.event.Logging
-import scala.collection.SortedSet
+import scala.collection.mutable.SortedSet
 import scala.collection.mutable.HashMap
-import scala.annotation.tailrec
 
-case class Expand(c: Concept) 
-case class ExpandRoot(c: Concept) 
-case class ExpandSome(s: Set[Concept])
-case class ExpandOr(e: SortedSet[Concept], u: SortedSet[Concept])
+case class Satisfy(c: Concept)
+case class Expand(e: SortedSet[Concept], u: SortedSet[Concept])
 case class Duplicate(e: SortedSet[Concept], u: SortedSet[Concept])
 case class Blocked(s: SortedSet[Concept])
 
@@ -55,21 +52,21 @@ class Tableau extends Actor {
    */
   val root = context.actorOf(Props[Node])
   def receive = {
-    case Expand(concept) => root ! ExpandRoot(nnf(concept))
-    case "Complete"      => println("Satisfiable")
-    case "Clash"         => println("Unsatisfiable")
+    case Satisfy(concept) => root ! Satisfy(nnf(concept))
+    case "Complete"       => println("Satisfiable")
+    case "Clash"          => println("Unsatisfiable")
   }
 }
 
 class Node extends Actor {
   var count = 0
   val log = Logging(context.system, this)
-  var expanded = SortedSet[Concept]()(ConceptOrdering)
-  var unexpanded = SortedSet[Concept]()(ConceptOrdering)
+  val expanded = SortedSet[Concept]()(ConceptOrdering)
+  val unexpanded = SortedSet[Concept]()(ConceptOrdering)
   var duplicates = HashMap[Set[ActorRef], Int]()
 
   /**
-   * Determine if a set contains clashing concepts (i.e. {C, ¬C}).
+   * Determine if a set contains inconsistent concepts (i.e. {C, ¬C}).
    */
   def clash(s: SortedSet[Concept]): Boolean = {
     def pairs = for (p <- s; q <- s) yield (p, q)
@@ -80,76 +77,65 @@ class Node extends Actor {
    * Apply expansion rules to concept set according to 'trace' strategy.
    * (i.e. disjunction, conjunction, existential, universal)
    */ 
-  @tailrec
-  private 
-  def expand(expanded: SortedSet[Concept], unexpanded: SortedSet[Concept]): 
-    SortedSet[Concept] = {
-    if (unexpanded.isEmpty) 
-      expanded
-    else if (clash(expanded) || clash(unexpanded)) 
-      expanded ++ unexpanded
-    else unexpanded.head match {
-      case Or(p, q) => {
-        if ((expanded intersect Set(p, q)).isEmpty) {
-          context.parent ! Duplicate(expanded, unexpanded.tail + p)
-          expand(expanded, unexpanded.tail + q)
+  def expand(e: SortedSet[Concept], u: SortedSet[Concept]) = {
+    expanded ++= e
+    unexpanded ++= u
+    if (expanded.nonEmpty) context.parent ! Blocked(expanded)
+
+    while (unexpanded.nonEmpty) {
+      val concept = unexpanded.head
+      unexpanded.remove(concept)
+
+      if (clash(expanded)) unexpanded.clear
+      else concept match {
+        case Atom(s)      => expanded.add(concept)
+        case Not(Atom(s)) => expanded.add(concept)
+        case Or(p, q) => {
+          if (!(expanded contains p) && !(expanded contains q)) {
+            context.parent ! Duplicate(expanded.clone, unexpanded + p)
+            unexpanded.add(q)
+          }
         }
-        else expand(expanded, unexpanded.tail)
-      }
-      case And(p, q) => {
-        val diff = Set[Concept](p, q) diff expanded
-        return expand(expanded ++ diff, unexpanded.tail ++ diff)
-      }
-      case Some(r, c) => {
-        val only = unexpanded.collect({case Only(s, q) if s == r => q})
-        context.actorOf(Props[Node]) ! ExpandSome(only.toSet + c)
-        count += 1
-        expand(expanded, unexpanded.tail)
-      }
-      case _ => {
-        expanded ++ unexpanded
+        case And(p, q) => {
+          unexpanded.add(p)
+          unexpanded.add(q)
+        }
+        case Some(r, c) => {
+          val only = unexpanded.collect({case Only(s, q) if s == r => q})
+          val set = SortedSet[Concept]()(ConceptOrdering) 
+          context.actorOf(Props[Node]) ! Expand(set, set ++ only + c)
+          count += 1
+        }
+        case Only(r, c) => concept
       }
     }
-  }
-
-  def satisfy(e: SortedSet[Concept], u: SortedSet[Concept]): Unit = {
-    concepts = expand(e, u)
-    context.parent ! Blocked(concepts)
-    if (clash(concepts)) context.parent ! "Clash"
+    if (clash(expanded)) context.parent ! "Clash"
     else if (count == 0) context.parent ! "Complete"
-    print(".")
-  }
-
-  def satisfy(concept: Concept): Unit = {
-    val s = SortedSet(concept)(ConceptOrdering)
-    satisfy(s, s)
-  }
-
-  def satisfy(set: Set[Concept]): Unit = {
-    val sorted = SortedSet[Concept]()(ConceptOrdering) ++ set 
-    satisfy(sorted, sorted)
   }
 
   def receive = {
-    case Expand(concept) => satisfy(concept)
-    case ExpandSome(set) => satisfy(set)
-    case ExpandOr(e, u)  => satisfy(e, u) 
-    case ExpandRoot(concept) => {
+    case Satisfy(concept) => {
       count = 1
-      context.actorOf(Props[Node]) ! Expand(concept) 
+      val set = SortedSet[Concept]()(ConceptOrdering)
+      context.actorOf(Props[Node]) ! Expand(set, set + concept) 
+    }
+    case Expand(e, u) => { 
+      expand(e, u)
     }
     case Duplicate(e, u) => {
       val child = context.actorOf(Props[Node]) 
-      child ! ExpandOr(e, u)
+      child ! Expand(e, u)
       duplicates(Set(child, sender)) = 2
       count += 1
     }
     case Blocked(s) => {
-      if (s subsetOf concepts) sender ! "Blocked"
+      if (s subsetOf expanded) sender ! "Blocked"
       else context.parent forward Blocked(s)
     }
     case "Clash" => {
       count -= 1
+      context.stop(sender)
+
       for (k <- duplicates.keys if k contains sender) {
         duplicates(k) -= 1    
         if (duplicates(k) == 0) {
@@ -157,13 +143,18 @@ class Node extends Actor {
           context.stop(self)
         }
       }
+
+      if (count == 0) {
+       if (duplicates.exists(_._2 == 0)) context.parent ! "Clash"
+       else context.parent ! "Complete"
+      }
     }
     case "Complete" => {
       count -= 1
       if (count == 0) context.parent ! "Complete"
     }
     case "Blocked" => {
-      println("BLOCKED")
+      log.info("Blocked")
       context.parent ! "Complete"
       context.stop(self)
     }
@@ -179,7 +170,7 @@ object Main {
 
     val system = ActorSystem()
     val reasoner = system.actorOf(Props[Tableau], "tableau")
-    reasoner ! Expand(concept)
+    reasoner ! Satisfy(concept)
   }
 }
 
