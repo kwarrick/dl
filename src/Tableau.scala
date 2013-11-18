@@ -9,6 +9,7 @@
 
 import akka.actor._
 import akka.event.Logging
+import scala.collection.mutable.TreeSet
 import scala.collection.mutable.SortedSet
 import scala.collection.mutable.HashMap
 
@@ -59,11 +60,22 @@ class Tableau extends Actor {
 }
 
 class Node extends Actor {
-  var count = 0
   val log = Logging(context.system, this)
+
+  var count = 0
   val expanded = SortedSet[Concept]()(ConceptOrdering)
   val unexpanded = SortedSet[Concept]()(ConceptOrdering)
-  var duplicates = HashMap[Set[ActorRef], Int]()
+  
+  val branches = HashMap[ActorRef, Int]()
+  val duplicates = HashMap[ActorRef, ActorRef]()
+
+  /**
+   * Unwind duplicate chain to find associated branch reference.
+   */
+  def branch(a: ActorRef): ActorRef = {
+    if (branches contains a) a
+    else branch(duplicates(a))
+  }
 
   /**
    * Determine if a set contains inconsistent concepts (i.e. {C, ¬C}).
@@ -103,21 +115,31 @@ class Node extends Actor {
         case Some(r, c) => {
           val only = unexpanded.collect({case Only(s, q) if s == r => q})
           val set = SortedSet[Concept]()(ConceptOrdering) 
-          context.actorOf(Props[Node]) ! Expand(set, set ++ only + c)
+          val child = context.actorOf(Props[Node]) 
+          child ! Expand(set, set ++ only + c)
+          branches += (child -> 1)
           count += 1
         }
         case Only(r, c) => concept
       }
     }
-    if (clash(expanded)) context.parent ! "Clash"
-    else if (count == 0) context.parent ! "Complete"
+    if (clash(expanded)) {
+      context.parent ! "Clash"
+      // context.stop(self)
+    }
+    else if (count == 0) {
+      context.parent ! "Complete"
+      // context.stop(self)
+    }
   }
 
   def receive = {
     case Satisfy(concept) => {
       count = 1
       val set = SortedSet[Concept]()(ConceptOrdering)
-      context.actorOf(Props[Node]) ! Expand(set, set + concept) 
+      val child = context.actorOf(Props[Node]) 
+      child ! Expand(set, set + concept) 
+      branches += (child -> 1)
     }
     case Expand(e, u) => { 
       expand(e, u)
@@ -125,7 +147,8 @@ class Node extends Actor {
     case Duplicate(e, u) => {
       val child = context.actorOf(Props[Node]) 
       child ! Expand(e, u)
-      duplicates(Set(child, sender)) = 2
+      duplicates += (child -> sender)
+      branches(branch(sender)) += 1
       count += 1
     }
     case Blocked(s) => {
@@ -134,29 +157,21 @@ class Node extends Actor {
     }
     case "Clash" => {
       count -= 1
-      context.stop(sender)
+      // context.stop(sender)
 
-      for (k <- duplicates.keys if k contains sender) {
-        duplicates(k) -= 1    
-        if (duplicates(k) == 0) {
-          context.parent ! "Clash" 
-          context.stop(self)
-        }
-      }
-
-      if (count == 0) {
-       if (duplicates.exists(_._2 == 0)) context.parent ! "Clash"
-       else context.parent ! "Complete"
-      }
+      branches(branch(sender)) -= 1
+      if (branches.exists(_._2 == 0)) context.parent ! "Clash"
+      else if (count == 0) context.parent ! "Complete"
     }
     case "Complete" => {
       count -= 1
+      // context.stop(sender)
       if (count == 0) context.parent ! "Complete"
     }
     case "Blocked" => {
       log.info("Blocked")
       context.parent ! "Complete"
-      context.stop(self)
+      // context.stop(self)
     }
     case msg => log.info("unknown message: " + msg)
   }
