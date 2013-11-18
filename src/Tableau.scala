@@ -123,14 +123,8 @@ class Node extends Actor {
         case Only(r, c) => concept
       }
     }
-    if (clash(expanded)) {
-      context.parent ! "Clash"
-      // context.stop(self)
-    }
-    else if (count == 0) {
-      context.parent ! "Complete"
-      // context.stop(self)
-    }
+    if (clash(expanded)) context.parent ! "Clash"
+    else if (count == 0) context.parent ! "Complete"
   }
 
   def receive = {
@@ -157,21 +151,19 @@ class Node extends Actor {
     }
     case "Clash" => {
       count -= 1
-      // context.stop(sender)
-
+      context.stop(sender)
       branches(branch(sender)) -= 1
       if (branches.exists(_._2 == 0)) context.parent ! "Clash"
       else if (count == 0) context.parent ! "Complete"
     }
     case "Complete" => {
       count -= 1
-      // context.stop(sender)
+      context.stop(sender)
       if (count == 0) context.parent ! "Complete"
     }
     case "Blocked" => {
       log.info("Blocked")
       context.parent ! "Complete"
-      // context.stop(self)
     }
     case msg => log.info("unknown message: " + msg)
   }
