@@ -34,10 +34,10 @@ class Tableau extends Actor {
    */
   def nnf(concept: Concept): Concept = concept match {
     case Not(Not(c))     => nnf(c)
-    case Not(And(p, q))  => Or(Not(nnf(p)), Not(nnf(q)))
-    case Not(Or(p, q))   => And(Not(nnf(p)), Not(nnf(q)))
-    case Not(Some(r, c)) => Only(r, Not(nnf(c)))
-    case Not(Only(r, c)) => Some(r, Not(nnf(c)))
+    case Not(And(p, q))  => Or(nnf(Not(p)), nnf(Not(q)))
+    case Not(Or(p, q))   => And(nnf(Not(p)), nnf(Not(q)))
+    case Not(Some(r, c)) => Only(r, nnf(Not(c)))
+    case Not(Only(r, c)) => Some(r, nnf(Not(c)))
     case And(p, q)       => And(nnf(p), nnf(q))
     case Or(p, q)        => Or(nnf(p), nnf(q))
     case Some(r, c)      => Some(r, nnf(c))
@@ -162,7 +162,6 @@ class Node extends Actor {
       if (count == 0) context.parent ! "Complete"
     }
     case "Blocked" => {
-      log.info("Blocked")
       context.parent ! "Complete"
     }
     case msg => log.info("unknown message: " + msg)
