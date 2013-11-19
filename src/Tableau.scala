@@ -123,7 +123,10 @@ class Node extends Actor {
         case Only(r, c) => concept
       }
     }
-    if (clash(expanded)) context.parent ! "Clash"
+    if (clash(expanded)) {
+      log.info("clash: " + expanded)
+      context.parent ! "Clash"
+    }
     else if (count == 0) context.parent ! "Complete"
   }
 
@@ -153,7 +156,11 @@ class Node extends Actor {
       count -= 1
       context.stop(sender)
       branches(branch(sender)) -= 1
-      if (branches.exists(_._2 == 0)) context.parent ! "Clash"
+      if (branches.exists(_._2 == 0)) {
+        log.info("fatal clash: " + branches)
+        log.info(sender)
+        context.parent ! "Clash"
+      }
       else if (count == 0) context.parent ! "Complete"
     }
     case "Complete" => {
