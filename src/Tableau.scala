@@ -54,8 +54,14 @@ class Tableau extends Actor {
   val root = context.actorOf(Props[Node])
   def receive = {
     case Satisfy(concept) => root ! Satisfy(nnf(concept))
-    case "Complete"       => println("Satisfiable")
-    case "Clash"          => println("Unsatisfiable")
+    case "Complete"       => {
+      println("Satisfiable")
+      context.system.shutdown()
+    }
+    case "Clash"          =>  {
+      println("Unsatisfiable")
+      context.system.shutdown()
+    }
   }
 }
 
@@ -123,10 +129,8 @@ class Node extends Actor {
         case Only(r, c) => concept
       }
     }
-    if (clash(expanded)) {
-      log.info("clash: " + expanded)
-      context.parent ! "Clash"
-    }
+
+    if (clash(expanded)) context.parent ! "Clash"
     else if (count == 0) context.parent ! "Complete"
   }
 
@@ -153,23 +157,32 @@ class Node extends Actor {
       else context.parent forward Blocked(s)
     }
     case "Clash" => {
+      require(count > 0)
+
       count -= 1
-      context.stop(sender)
       branches(branch(sender)) -= 1
+
       if (branches.exists(_._2 == 0)) {
-        log.info("fatal clash: " + branches)
-        log.info(sender)
         context.parent ! "Clash"
+        context.stop(self)
       }
-      else if (count == 0) context.parent ! "Complete"
+      else if (count == 0)  {
+        context.parent ! "Complete"
+        context.stop(self)
+      }
     }
     case "Complete" => {
+      require(count > 0)
+
       count -= 1
-      context.stop(sender)
-      if (count == 0) context.parent ! "Complete"
+      if (count == 0) {
+        context.parent ! "Complete"
+        context.stop(self)
+      }
     }
     case "Blocked" => {
       context.parent ! "Complete"
+      context.stop(self)
     }
     case msg => log.info("unknown message: " + msg)
   }
@@ -177,10 +190,7 @@ class Node extends Actor {
 
 object Main {
   def main(args: Array[String]) {
-    println("input : "+ args(0))
     val concept = ManchesterParser(args(0))
-    println(concept)
-
     val system = ActorSystem()
     val reasoner = system.actorOf(Props[Tableau], "tableau")
     reasoner ! Satisfy(concept)

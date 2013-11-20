@@ -15,11 +15,11 @@ object SExprParser extends JavaTokenParsers {
     def infix(l: Expr): String = l match {
       case SIdent(s) => s
       case SExpr(List(SIdent("NOT"), e))  =>
-        "(NOT " + infix(e) + ")"
+        "(NOT (" + infix(e) + "))"
       case SExpr(List(SIdent(op), a, b)) => 
         "(" + infix(a) + " " + op + " " + infix(b) + ")"
     }
-    println(infix(parseAll(sexpr, args(0))))
+    println(infix(parseAll(sexpr, args(0)).get))
   }
 }
 
