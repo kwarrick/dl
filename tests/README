@@ -1,0 +1,11 @@
+
+.
+├── cnf
+│   ├── convert.rb
+│   ├── quinn.cnf                   SATISFIABLE
+│   └── simple_v3_c2.cnf            SATISFIABLE
+├── dl98
+│   ├── k_branch_n.alc              SATISFIABLE
+│   └── k_branch_p.alc              UNSATISFIABLE
+├── pillarscour                     SATISFIABLE
+└── vegetarian                      SATISFIABLE

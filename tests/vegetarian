@@ -1,0 +1,3 @@
+person AND 
+(eats ONLY (plant OR dairy)) AND
+(NOT person OR (eats SOME NOT plant))
