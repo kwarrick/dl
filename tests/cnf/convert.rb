@@ -5,6 +5,7 @@
 lines = ARGF.map do |line|
   next if line =~ /\s*[pc]/
   line.strip
+    .gsub(/\s+0\s*$/, '')
     .gsub(/\d+/, '_\0')
     .gsub(/\s+/, " OR ")
     .gsub("-", "NOT ")
