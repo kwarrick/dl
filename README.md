@@ -1,7 +1,7 @@
 Tableau ALC Reasoner
 ==
 
-A ALC reasoner written with Scala Actors. 
+A proof of concept distributable ALC reasoner written with Scala Actors. 
 
 ```
 $ scalac -feature -deprecation -cp bin -d bin src/ALC.scala
